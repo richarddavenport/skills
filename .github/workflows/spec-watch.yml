@@ -1,0 +1,41 @@
+name: Spec watch
+
+# Checks ClickUp's published API specs once a week, and opens or updates a pull request
+# when they change.
+on:
+  schedule:
+    - cron: '0 14 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Download and compare the specs
+        id: compare
+        run: |
+          tools/spec-watch.sh "$RUNNER_TEMP/pr-body.md" | tee "$RUNNER_TEMP/out"
+          tail -1 "$RUNNER_TEMP/out" >> "$GITHUB_OUTPUT"
+      - name: Open or update the pull request
+        if: steps.compare.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C clickup-spec-update
+          git commit -qam "Update ClickUp's API specs"
+          git push -f origin clickup-spec-update
+          if [ "$(gh pr view clickup-spec-update --json state -q .state 2>/dev/null)" = "OPEN" ]; then
+            gh pr edit clickup-spec-update --body-file "$RUNNER_TEMP/pr-body.md"
+          else
+            gh pr create --base main --head clickup-spec-update --title "ClickUp's API specs changed" --body-file "$RUNNER_TEMP/pr-body.md"
+          fi

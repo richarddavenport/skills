@@ -36,6 +36,8 @@ node tools/endpoints.mjs docs --write       # regenerate the command tables in R
 
 The tools read the v3 spec with Ruby, since ClickUp only publishes it as YAML. CI runs all of this on every push and pull request.
 
+Every Monday a workflow downloads ClickUp's specs. When they've changed, it opens a pull request that updates `spec/` and lists the endpoints that were added, removed or changed. Run it any time from the Actions tab.
+
 ## License
 
 MIT
