@@ -1,11 +1,11 @@
 ---
 name: clickup
-description: Interact with ClickUp tasks, lists, spaces, comments, time tracking, docs, and chat via the ClickUp API v2 and v3. Use when the user mentions ClickUp, wants to view or create tasks, update task status, add comments, search tasks, manage docs, track time, send chat messages, or navigate workspace hierarchy. Replaces the ClickUp MCP server. Feature parity with all MCP tools.
+description: Interact with ClickUp through its REST API v2 and v3, with a command for every endpoint. Tasks, lists, spaces, checklists, comments, custom fields, time tracking, goals, views, webhooks, templates, docs and chat. Use when the user mentions ClickUp, wants to view or create tasks, update task status, add comments or checklists, search tasks, manage docs, track time, send chat messages, or navigate workspace hierarchy.
 ---
 
 # ClickUp
 
-Calls the ClickUp REST API (v2 + v3) directly via `scripts/cu.js`. Zero dependencies, no MCP server.
+Calls the ClickUp REST API (v2 + v3) directly via `scripts/cu.js`. Zero dependencies, no MCP server. There's a command for every endpoint in ClickUp's published specs.
 
 ## Setup
 
@@ -130,6 +130,36 @@ The examples below shorten this to `node cu.js`.
 | `create-page <doc_id> --name="..." --content="..." [--parent-page=<page_id>]` | Add a page, optionally under another page |
 | `update-page <doc_id> <page_id> --content="..." [--mode=append]` | Edit a page. `--mode` is `replace` (default), `append` or `prepend` |
 
+### Checklists
+| Command | What it does |
+|---|---|
+| `checklists <task_id>` | A task's checklists, with item IDs and what's ticked off |
+| `create-checklist <task_id> --name="..."` | Add a checklist to a task |
+| `add-checklist-item <checklist_id> --name="..." [--assignee=<uid>]` | Add an item |
+| `check-item <checklist_id> <item_id>` | Tick an item off |
+| `uncheck-item <checklist_id> <item_id>` | Untick an item |
+| `update-checklist-item <checklist_id> <item_id> [--name=...] [--parent=<item_id>]` | Rename, assign, nest or resolve an item |
+| `delete-checklist-item <checklist_id> <item_id>` | Delete an item |
+| `update-checklist <checklist_id> [--name=...] [--position=<n>]` | Rename or reorder a checklist |
+| `delete-checklist <checklist_id>` | Delete a checklist |
+
+### Everything else
+Every other endpoint has its own command too. That covers spaces, tags, templates, goals, views, webhooks, user groups, guests and users, attachments, more comment and custom field endpoints, time entry details and tags, the rest of chat, access and audit logs.
+
+- `node cu.js help` lists every command by group.
+- `node cu.js help <command>` prints its usage and the endpoint it calls.
+- [REFERENCE.md](REFERENCE.md) has every command with its usage and endpoint.
+
+Those commands take IDs as arguments in the order the endpoint's path uses them, and fields as `--kebab-case` flags. Anything the flags don't cover goes in `--body='{json}'`, which merges into the request body. Guests, users and audit logs need ClickUp's Enterprise plan, and ClickUp refuses them otherwise.
+
+### Any endpoint
+```bash
+node cu.js api GET /v2/team/{team_id}/plan            # {team_id} and {workspace_id} become the workspace
+node cu.js api POST /v2/task/<task_id>/comment --body='{"comment_text":"Hi"}'
+node cu.js api GET /v3/workspaces/{workspace_id}/docs --query='limit=5'
+```
+Use it for anything ClickUp adds before it gets its own command.
+
 ## Common workflows
 
 ### Triage/status update
@@ -165,7 +195,17 @@ node cu.js spaces                     # just spaces
 node cu.js folders <space_id>         # folders in a space
 ```
 
+### Work through a checklist
+```bash
+node cu.js checklists <task_id>                       # checklist and item IDs
+node cu.js check-item <checklist_id> <item_id>        # tick one off
+node cu.js create-checklist <task_id> --name="Deploy" --dry-run   # see the request first
+```
+
 Task IDs can be ClickUp's own IDs or custom IDs like `ABC-123`.
+
+## Rate limits
+ClickUp allows 100 requests a minute per token on most plans. When a request hits the limit, the script waits until the limit resets and retries, up to 3 times, saying so on stderr. If it's still limited, it stops and prints when the limit resets.
 
 ## All flags
 
@@ -196,6 +236,8 @@ Task IDs can be ClickUp's own IDs or custom IDs like `ABC-123`.
 | `--team=<id>` | Override team/workspace ID |
 | `--workspace=<id>` | Override workspace ID (v3) |
 | `--raw` | Print raw JSON response |
+| `--dry-run` | Print a write request (method, URL and body) instead of sending it. Reads still run |
+| `--body=<json>` | Raw JSON merged into the request body of an endpoint command or `api` |
 | `--token=<key>` | Override CLICKUP_API_KEY |
 
-See [REFERENCE.md](REFERENCE.md) for full API endpoint list.
+See [REFERENCE.md](REFERENCE.md) for every command and the endpoint it calls.

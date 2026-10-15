@@ -1,0 +1,23 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Syntax
+        run: node --check skills/clickup/scripts/cu.js
+      - name: Tests
+        run: node --test test/*.test.mjs
+      - name: Every spec endpoint has a command
+        run: node tools/endpoints.mjs coverage --check
+      - name: REFERENCE.md matches the commands
+        run: node tools/endpoints.mjs docs --check

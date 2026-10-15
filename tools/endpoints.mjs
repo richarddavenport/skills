@@ -1,0 +1,132 @@
+#!/usr/bin/env node
+// Compares ClickUp's published API specs with what the clickup skill's cu.js covers.
+//
+//   node tools/endpoints.mjs coverage [--check]         every spec endpoint without a command
+//   node tools/endpoints.mjs diff <old-dir> <new-dir>   endpoints added, removed or changed
+//   node tools/endpoints.mjs docs [--write | --check]   the endpoint command tables in REFERENCE.md
+//
+// The v3 spec is YAML, which Node can't read on its own, so it's converted with Ruby.
+
+import { readFileSync, writeFileSync, readdirSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const ROOT      = join(dirname(fileURLToPath(import.meta.url)), '..');
+const CU        = join(ROOT, 'skills/clickup/scripts/cu.js');
+const REFERENCE = join(ROOT, 'skills/clickup/REFERENCE.md');
+const SPEC_DIR  = join(ROOT, 'spec');
+const METHODS   = ['get', 'post', 'put', 'patch', 'delete'];
+
+function loadSpec(file) {
+  if (file.endsWith('.json')) return JSON.parse(readFileSync(file, 'utf8'));
+  const json = execFileSync('ruby', ['-ryaml', '-rjson', '-e', 'print JSON.generate(YAML.safe_load(File.read(ARGV[0]), aliases: true))', file], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 });
+  return JSON.parse(json);
+}
+
+// "v2 GET /task/{}/checklist": the version, method and path with its parameters blanked.
+function key(version, method, path) {
+  return `${version} ${method.toUpperCase()} ${path.replace(/^\/(api\/)?v[23]/, '').replace(/\$\{[^}]+\}|\{[^}]+\}/g, '{}')}`;
+}
+
+// Every operation in the specs in `dir`, keyed as above.
+function specEndpoints(dir) {
+  const ops = new Map();
+  for (const file of readdirSync(dir).filter(f => /\.(json|ya?ml)$/.test(f)).sort()) {
+    const spec = loadSpec(join(dir, file));
+    for (const [path, item] of Object.entries(spec.paths || {})) {
+      for (const method of METHODS.filter(m => item[m])) {
+        const version = /^\/(api\/)?v3\//.test(path) ? 'v3' : 'v2';
+        ops.set(key(version, method, path), { path, method: method.toUpperCase(), summary: item[method].summary || '', op: item[method] });
+      }
+    }
+  }
+  return ops;
+}
+
+// The endpoints cu.js calls: its endpoint table, plus literal v2/v3 calls in the built-in commands.
+function covered() {
+  const { endpoints } = createRequire(import.meta.url)(CU);
+  const keys = new Set(Object.values(endpoints).map(e => key(`v${e.v}`, e.m, e.p)));
+  const source = readFileSync(CU, 'utf8');
+  for (const [, version, method, path] of source.matchAll(/\b(v[23])\.(get|post|put|patch|del)\(\s*[`']([^`'?]+)/g)) {
+    keys.add(key(version, method === 'del' ? 'delete' : method, path));
+  }
+  return keys;
+}
+
+function coverage(check) {
+  const spec = specEndpoints(SPEC_DIR);
+  const have = covered();
+  const missing = [...spec].filter(([k]) => !have.has(k));
+  const stale = [...have].filter(k => !spec.has(k));
+  console.log(`cu.js covers ${spec.size - missing.length} of the ${spec.size} endpoints in spec/.`);
+  if (missing.length) {
+    console.log('\nNo command yet:');
+    for (const [, e] of missing) console.log(`  ${e.method} ${e.path}  (${e.summary})`);
+  }
+  if (stale.length) {
+    console.log('\nCalled by cu.js but missing from the spec:');
+    for (const k of stale) console.log(`  ${k}`);
+  }
+  if (check && (missing.length || stale.length)) process.exit(1);
+}
+
+function diff(oldDir, newDir) {
+  const before = specEndpoints(oldDir);
+  const after = specEndpoints(newDir);
+  const line = e => `- \`${e.method} ${e.path}\`${e.summary ? ` (${e.summary})` : ''}`;
+  const added = [...after].filter(([k]) => !before.has(k)).map(([, e]) => line(e));
+  const removed = [...before].filter(([k]) => !after.has(k)).map(([, e]) => line(e));
+  const changed = [...after]
+    .filter(([k, e]) => before.has(k) && JSON.stringify(before.get(k).op) !== JSON.stringify(e.op))
+    .map(([, e]) => line(e));
+  if (!added.length && !removed.length && !changed.length) {
+    console.log('No endpoint changes. Only descriptions or shared schemas changed.');
+    return;
+  }
+  for (const [title, lines] of [['Added', added], ['Removed', removed], ['Changed', changed]]) {
+    if (lines.length) console.log(`### ${title}\n\n${lines.join('\n')}\n`);
+  }
+}
+
+const DOCS_START = '<!-- endpoint-commands:start -->';
+const DOCS_END   = '<!-- endpoint-commands:end -->';
+
+function docsTables() {
+  const { endpoints, usage } = createRequire(import.meta.url)(CU);
+  const groups = new Map();
+  for (const [name, e] of Object.entries(endpoints)) {
+    if (!groups.has(e.g)) groups.set(e.g, []);
+    groups.get(e.g).push(`| \`${usage(name, e).replace(/^cu\.js /, '').replace(/\|/g, '\\|')}\` | ${e.d} | ${e.m} \`/v${e.v}${e.p}\` |`);
+  }
+  const sections = [...groups].map(([g, rows]) => `### ${g}\n\n| Command | What it does | Endpoint |\n|---|---|---|\n${rows.join('\n')}`);
+  return `${DOCS_START}\n<!-- Generated by \`node tools/endpoints.mjs docs --write\`. Don't edit by hand. -->\n\n${sections.join('\n\n')}\n\n${DOCS_END}`;
+}
+
+function docs(mode) {
+  const current = readFileSync(REFERENCE, 'utf8');
+  const start = current.indexOf(DOCS_START);
+  const end = current.indexOf(DOCS_END);
+  if (start < 0 || end < 0) throw new Error(`REFERENCE.md needs ${DOCS_START} and ${DOCS_END} markers.`);
+  const next = current.slice(0, start) + docsTables() + current.slice(end + DOCS_END.length);
+  if (mode === '--write') return writeFileSync(REFERENCE, next);
+  if (mode === '--check') {
+    if (next !== current) {
+      console.error('REFERENCE.md is out of date. Run `node tools/endpoints.mjs docs --write`.');
+      process.exit(1);
+    }
+    return console.log('REFERENCE.md is up to date.');
+  }
+  console.log(docsTables());
+}
+
+const [cmd, ...rest] = process.argv.slice(2);
+if (cmd === 'coverage') coverage(rest.includes('--check'));
+else if (cmd === 'diff' && rest.length === 2) diff(rest[0], rest[1]);
+else if (cmd === 'docs') docs(rest[0]);
+else {
+  console.error('Usage: node tools/endpoints.mjs coverage [--check] | diff <old-dir> <new-dir> | docs [--write | --check]');
+  process.exit(1);
+}
